@@ -30,8 +30,6 @@ except ImportError:
 		Y_CAL = -0.9
 		ENERGY_RAMP = 0.03
 		FILAMENT_RAMP = 0.1
-		XY_RAMP = 1.0
-
 
 	config = DummyConfig()
 
@@ -152,7 +150,8 @@ class RampingManager(QObject):
 			ramp_rate = self._ramps.get(ch_val, 1.0)
 			max_change = ramp_rate * delta_t
 
-			new_v = min(current_v + max_change, target_v) if target_v > current_v else max(current_v - max_change, target_v)
+			new_v = min(current_v + max_change, target_v) if target_v > current_v else max(current_v - max_change,
+																						   target_v)
 
 			self._currents[ch_val] = new_v
 			self.controller.set_voltage(c_char(ch_val), new_v)
@@ -173,7 +172,8 @@ class ToggleSwitch(QWidget):
 		self.setCursor(Qt.CursorShape.PointingHandCursor)
 
 	def setChecked(self, checked):
-		if self._checked != checked: self._checked = checked; self.stateChanged.emit(5 if self._checked else 0); self.update()
+		if self._checked != checked: self._checked = checked; self.stateChanged.emit(
+			5 if self._checked else 0); self.update()
 
 	def mousePressEvent(self, event): self.setChecked(not self._checked); super().mousePressEvent(event)
 
@@ -240,7 +240,7 @@ class VoltageSlider(QWidget):
 		self.slider.blockSignals(True)
 		# 将电压转换为滑块位置
 		pos = self.slider_min + ((voltage - self.min_v) / (self.max_v - self.min_v)) * (
-					self.slider_max - self.slider_min)
+				self.slider_max - self.slider_min)
 		self.slider.setValue(int(pos))
 		self.value_label.setText(f"{voltage:.2f} V")
 		self.slider.blockSignals(False)
@@ -277,7 +277,8 @@ class MainWindow(QMainWindow):
 		top_layout.setSpacing(10)
 
 		self.comp_ctrl = ToggleControl("COMPUTER CONTROL")
-		self.comp_ctrl.stateChanged.connect(lambda v: self.controller.set_voltage(self.controller.COMPUTER_CONTROL, float(v)))
+		self.comp_ctrl.stateChanged.connect(
+			lambda v: self.controller.set_voltage(self.controller.COMPUTER_CONTROL, float(v)))
 		top_layout.addWidget(self.comp_ctrl, 0, 0)
 
 		# Idle/Work 按钮
@@ -291,7 +292,8 @@ class MainWindow(QMainWindow):
 		top_layout.addLayout(preset_button_layout, 0, 1, Qt.AlignmentFlag.AlignCenter)
 
 		self.beam_blank = ToggleControl("BEAM BLANKING")
-		self.beam_blank.stateChanged.connect(lambda v: self.controller.set_voltage(self.controller.BEAM_BLANKING, float(v)))
+		self.beam_blank.stateChanged.connect(
+			lambda v: self.controller.set_voltage(self.controller.BEAM_BLANKING, float(v)))
 		top_layout.addWidget(self.beam_blank, 0, 2)
 
 		top_layout.setColumnStretch(0, 1)
@@ -324,13 +326,20 @@ class MainWindow(QMainWindow):
 		# --- 连接信号 ---
 		self.idle_button.clicked.connect(self.set_idle_state)
 		self.work_button.clicked.connect(self.set_work_state)
-		self.energy_slider.voltageChanged.connect(lambda v: self.ramping_manager.set_target(self.controller.ENERGY, v, config.ENERGY_RAMP))
-		self.filament_slider.voltageChanged.connect(lambda v: self.ramping_manager.set_target(self.controller.FILAMENT, v, config.FILAMENT_RAMP))
-		self.grid_slider.voltageChanged.connect(lambda v: self.ramping_manager.set_target(self.controller.GRID, v, config.XY_RAMP))
-		self.focus_slider.voltageChanged.connect(lambda v: self.ramping_manager.set_target(self.controller.FOCUS, v, config.XY_RAMP))
-		self.def_x_slider.voltageChanged.connect(lambda v: self.ramping_manager.set_target(self.controller.DEFLECTION_X, v, config.XY_RAMP))
-		self.def_y_slider.voltageChanged.connect(lambda v: self.ramping_manager.set_target(self.controller.DEFLECTION_Y, v, config.XY_RAMP))
-		self.beam_rock_slider.voltageChanged.connect(lambda v: self.ramping_manager.set_target(self.controller.BEAM_ROCKING, v, config.XY_RAMP))
+
+		# ENERGY and FILAMENT use the ramping manager for smooth transitions
+		self.energy_slider.voltageChanged.connect(
+			lambda v: self.ramping_manager.set_target(self.controller.ENERGY, v, config.ENERGY_RAMP))
+		self.filament_slider.voltageChanged.connect(
+			lambda v: self.ramping_manager.set_target(self.controller.FILAMENT, v, config.FILAMENT_RAMP))
+
+		# MODIFIED: These sliders now directly control the hardware for immediate response
+		self.grid_slider.voltageChanged.connect(lambda v: self.controller.set_voltage(self.controller.GRID, v))
+		self.focus_slider.voltageChanged.connect(lambda v: self.controller.set_voltage(self.controller.FOCUS, v))
+		self.def_x_slider.voltageChanged.connect(lambda v: self.controller.set_voltage(self.controller.DEFLECTION_X, v))
+		self.def_y_slider.voltageChanged.connect(lambda v: self.controller.set_voltage(self.controller.DEFLECTION_Y, v))
+		self.beam_rock_slider.voltageChanged.connect(
+			lambda v: self.controller.set_voltage(self.controller.BEAM_ROCKING, v))
 
 		# --- 初始化 ---
 		# 修正: 无论设备是否连接成功，都执行初始化
@@ -341,21 +350,18 @@ class MainWindow(QMainWindow):
 	def initialize_states(self):
 		"""在启动时立即设置所有通道的初始值。"""
 		print("正在初始化通道状态...")
-		# 设置滑块UI并立即更新硬件，无渐变
+		# 设置滑块UI。对于直接控制的滑块，这也会立即更新硬件。
 		self.energy_slider.set_voltage(config.ENERGY_IDLE)
 		self.filament_slider.set_voltage(config.FILAMENT_IDLE)
 		self.grid_slider.set_voltage(config.GRID_CAL)
 		self.focus_slider.set_voltage(config.FOCUS_CAL)
 		self.def_x_slider.set_voltage(config.X_CAL)
 		self.def_y_slider.set_voltage(config.Y_CAL)
+		# BEAM ROCKING starts at its default value
 
-		# 初始化 Ramping Manager 的内部状态
+		# 初始化 Ramping Manager 的内部状态 (仅限需要渐变的通道)
 		self.ramping_manager.set_initial_state(self.controller.ENERGY, config.ENERGY_IDLE, config.ENERGY_RAMP)
 		self.ramping_manager.set_initial_state(self.controller.FILAMENT, config.FILAMENT_IDLE, config.FILAMENT_RAMP)
-		self.ramping_manager.set_initial_state(self.controller.GRID, config.GRID_CAL, config.XY_RAMP)
-		self.ramping_manager.set_initial_state(self.controller.FOCUS, config.FOCUS_CAL, config.XY_RAMP)
-		self.ramping_manager.set_initial_state(self.controller.DEFLECTION_X, config.X_CAL, config.XY_RAMP)
-		self.ramping_manager.set_initial_state(self.controller.DEFLECTION_Y, config.Y_CAL, config.XY_RAMP)
 
 	def set_idle_state(self):
 		"""将 ENERGY 和 FILAMENT 渐变到 IDLE 状态。"""
@@ -372,7 +378,8 @@ class MainWindow(QMainWindow):
 	def open_device_and_show_status(self):
 		"""尝试打开设备并显示结果。"""
 		if not self.controller.open_device():
-			QMessageBox.warning(self, "未能打开设备", "未能连接到采集卡\n请检查USB线是否插好\n以及驱动和dll库的设置是否正确")
+			QMessageBox.warning(self, "未能打开设备",
+								"未能连接到采集卡\n请检查USB线是否插好\n以及驱动和dll库的设置是否正确")
 
 	def closeEvent(self, event):
 		"""在退出时确保硬件连接已关闭。"""

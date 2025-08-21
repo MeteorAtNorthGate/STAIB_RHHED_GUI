@@ -12,4 +12,4 @@ Y_CAL = -2.28
 #ramp
 ENERGY_RAMP = 0.08
 FILAMENT_RAMP = 0.08
-XY_RAMP = 1
+# XY_RAMP = 1 # This is no longer used, parameters are updated instantly.
