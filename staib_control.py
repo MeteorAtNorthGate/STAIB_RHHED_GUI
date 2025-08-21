@@ -1,23 +1,19 @@
 import sys
 import time
+import math
 from ctypes import windll, c_int, c_char, c_float
 
 from PySide6.QtWidgets import (
 	QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
-	QLabel, QSlider, QMessageBox, QPushButton
+	QLabel, QSlider, QMessageBox, QPushButton, QTextEdit
 )
 from PySide6.QtCore import Qt, Signal, QObject, QTimer
-from PySide6.QtGui import QPainter, QColor, QBrush, QFont
+from PySide6.QtGui import QPainter, QColor, QBrush, QFont, QTextCursor
 
 # 尝试导入用户定义的配置文件
 try:
 	import config
-
-	print("成功加载 config.py")
 except ImportError:
-	print("警告: 未找到 config.py。将使用默认值。")
-
-
 	# 创建一个虚拟的 config 模块作为后备
 	class DummyConfig:
 		ENERGY_IDLE = 5.0
@@ -30,8 +26,22 @@ except ImportError:
 		Y_CAL = -0.9
 		ENERGY_RAMP = 0.03
 		FILAMENT_RAMP = 0.1
-
 	config = DummyConfig()
+
+
+# =============================================================================
+# 0. Custom Stream for Logging
+#    - 将 stdout 重定向到 GUI 文本框
+# =============================================================================
+class Stream(QObject):
+	"""自定义流对象，用于将 print 输出重定向到 QTextEdit。"""
+	newText = Signal(str)
+
+	def write(self, text):
+		self.newText.emit(str(text))
+
+	def flush(self):
+		pass # 在这个应用中是必需的，但可以留空
 
 
 # =============================================================================
@@ -77,6 +87,7 @@ class HardwareController:
 				self.device_open = True
 				return True
 			else:
+				print("错误: 无法打开 USB3 设备。")
 				self.device_open = False
 				self.dummy_mode = True
 				return False
@@ -96,7 +107,7 @@ class HardwareController:
 			return
 		if self.device_open and self.dll:
 			self.dll.SetUSB3AoImmediately(self.DevIndex, channel, c_float(voltage))
-			print(f"设置通道 {ord(channel.value)} 为 {voltage:.2f} V")
+			#print(f"设置通道 {ord(channel.value)} 为 {voltage:.2f} V")
 
 
 # =============================================================================
@@ -104,7 +115,7 @@ class HardwareController:
 #    - 处理平滑的电压过渡逻辑
 # =============================================================================
 class RampingManager(QObject):
-	"""管理所有适用通道的电压渐变。"""
+	"""管理所有适用通道的电压ramp。"""
 
 	def __init__(self, controller: HardwareController, parent=None):
 		super().__init__(parent)
@@ -114,7 +125,7 @@ class RampingManager(QObject):
 		self._ramps = {}
 
 		self._timer = QTimer(self)
-		self._timer.setInterval(50)  # 每秒更新20次以实现平滑渐变
+		self._timer.setInterval(50)  # 每秒更新20次以实现平滑ramp
 		self._timer.timeout.connect(self._update_all_voltages)
 		self._last_update_time = 0
 
@@ -130,7 +141,7 @@ class RampingManager(QObject):
 		self.controller.set_voltage(channel, voltage)
 
 	def set_target(self, channel: c_char, voltage: float, ramp_rate: float):
-		"""为通道设置一个新的目标电压以进行渐变。"""
+		"""为通道设置一个新的目标电压以进行ramp。"""
 		if channel.value not in self._currents:
 			self._currents[channel.value] = 0.0
 		self._targets[channel.value] = voltage
@@ -171,11 +182,18 @@ class ToggleSwitch(QWidget):
 		self._checked = False
 		self.setCursor(Qt.CursorShape.PointingHandCursor)
 
-	def setChecked(self, checked):
-		if self._checked != checked: self._checked = checked; self.stateChanged.emit(
-			5 if self._checked else 0); self.update()
+	def isChecked(self):
+		return self._checked
 
-	def mousePressEvent(self, event): self.setChecked(not self._checked); super().mousePressEvent(event)
+	def setChecked(self, checked):
+		if self._checked != checked:
+			self._checked = checked
+			self.stateChanged.emit(5 if self._checked else 0)
+			self.update()
+
+	def mousePressEvent(self, event):
+		self.setChecked(not self._checked)
+		super().mousePressEvent(event)
 
 	def paintEvent(self, event):
 		p = QPainter(self)
@@ -236,15 +254,12 @@ class VoltageSlider(QWidget):
 
 	def set_voltage(self, voltage: float):
 		"""通过代码设置滑块的电压值并更新UI。"""
-		# 阻止信号循环触发
 		self.slider.blockSignals(True)
-		# 将电压转换为滑块位置
 		pos = self.slider_min + ((voltage - self.min_v) / (self.max_v - self.min_v)) * (
 				self.slider_max - self.slider_min)
 		self.slider.setValue(int(pos))
 		self.value_label.setText(f"{voltage:.2f} V")
 		self.slider.blockSignals(False)
-		# 手动发射信号以确保状态一致
 		self.voltageChanged.emit(voltage)
 
 	def _on_slider_change(self, value: int):
@@ -262,7 +277,8 @@ class MainWindow(QMainWindow):
 	def __init__(self):
 		super().__init__()
 		self.setWindowTitle("Staib Instruments Control Panel")
-		self.setMinimumWidth(500)
+		self.setMinimumSize(900, 550)
+		self._is_shutting_down = False
 
 		self.controller = HardwareController()
 		self.ramping_manager = RampingManager(self.controller, self)
@@ -277,11 +293,9 @@ class MainWindow(QMainWindow):
 		top_layout.setSpacing(10)
 
 		self.comp_ctrl = ToggleControl("COMPUTER CONTROL")
-		self.comp_ctrl.stateChanged.connect(
-			lambda v: self.controller.set_voltage(self.controller.COMPUTER_CONTROL, float(v)))
+		self.comp_ctrl.stateChanged.connect(self.safe_toggle_computer_control)
 		top_layout.addWidget(self.comp_ctrl, 0, 0)
 
-		# Idle/Work 按钮
 		preset_button_layout = QHBoxLayout()
 		self.idle_button = QPushButton("Idle")
 		self.work_button = QPushButton("Work")
@@ -322,18 +336,23 @@ class MainWindow(QMainWindow):
 		sliders_layout.addWidget(self.def_y_slider, 2, 1)
 		sliders_layout.addWidget(self.beam_rock_slider, 3, 0, 1, 2)
 		main_layout.addLayout(sliders_layout)
+		main_layout.addStretch()
+
+		# --- NEW: 创建输出面板 ---
+		self.output_panel = QTextEdit()
+		self.output_panel.setReadOnly(True)
+		self.output_panel.setFont(QFont("Courier", 9))
+		self.output_panel.setStyleSheet("background-color: #f0f0f0; border: 1px solid #ccc;")
+		self.output_panel.setFixedHeight(150)
+		main_layout.addWidget(self.output_panel)
 
 		# --- 连接信号 ---
 		self.idle_button.clicked.connect(self.set_idle_state)
 		self.work_button.clicked.connect(self.set_work_state)
-
-		# ENERGY and FILAMENT use the ramping manager for smooth transitions
 		self.energy_slider.voltageChanged.connect(
 			lambda v: self.ramping_manager.set_target(self.controller.ENERGY, v, config.ENERGY_RAMP))
 		self.filament_slider.voltageChanged.connect(
 			lambda v: self.ramping_manager.set_target(self.controller.FILAMENT, v, config.FILAMENT_RAMP))
-
-		# MODIFIED: These sliders now directly control the hardware for immediate response
 		self.grid_slider.voltageChanged.connect(lambda v: self.controller.set_voltage(self.controller.GRID, v))
 		self.focus_slider.voltageChanged.connect(lambda v: self.controller.set_voltage(self.controller.FOCUS, v))
 		self.def_x_slider.voltageChanged.connect(lambda v: self.controller.set_voltage(self.controller.DEFLECTION_X, v))
@@ -342,35 +361,47 @@ class MainWindow(QMainWindow):
 			lambda v: self.controller.set_voltage(self.controller.BEAM_ROCKING, v))
 
 		# --- 初始化 ---
-		# 修正: 无论设备是否连接成功，都执行初始化
+		self.setup_logging()
 		self.open_device_and_show_status()
 		self.initialize_states()
 		self.ramping_manager.start()
 
+	def setup_logging(self):
+		"""NEW: 重定向 stdout 到输出面板。"""
+		self._stream = Stream()
+		self._stream.newText.connect(self.on_new_text)
+		sys.stdout = self._stream
+		# 存储原始 stdout 以便在退出时恢复
+		self._original_stdout = sys.__stdout__
+
+	def on_new_text(self, text: str):
+		"""NEW: 将文本附加到输出面板。"""
+		self.output_panel.moveCursor(QTextCursor.MoveOperation.End)
+		self.output_panel.insertPlainText(text)
+
 	def initialize_states(self):
 		"""在启动时立即设置所有通道的初始值。"""
 		print("正在初始化通道状态...")
-		# 设置滑块UI。对于直接控制的滑块，这也会立即更新硬件。
 		self.energy_slider.set_voltage(config.ENERGY_IDLE)
 		self.filament_slider.set_voltage(config.FILAMENT_IDLE)
 		self.grid_slider.set_voltage(config.GRID_CAL)
 		self.focus_slider.set_voltage(config.FOCUS_CAL)
 		self.def_x_slider.set_voltage(config.X_CAL)
 		self.def_y_slider.set_voltage(config.Y_CAL)
-		# BEAM ROCKING starts at its default value
+		self.beam_rock_slider.set_voltage(0.0)
 
-		# 初始化 Ramping Manager 的内部状态 (仅限需要渐变的通道)
 		self.ramping_manager.set_initial_state(self.controller.ENERGY, config.ENERGY_IDLE, config.ENERGY_RAMP)
 		self.ramping_manager.set_initial_state(self.controller.FILAMENT, config.FILAMENT_IDLE, config.FILAMENT_RAMP)
+		print("初始化完成。")
 
 	def set_idle_state(self):
-		"""将 ENERGY 和 FILAMENT 渐变到 IDLE 状态。"""
+		"""将 ENERGY 和 FILAMENT ramp到 IDLE 状态。"""
 		print("设置状态为: Idle")
 		self.energy_slider.set_voltage(config.ENERGY_IDLE)
 		self.filament_slider.set_voltage(config.FILAMENT_IDLE)
 
 	def set_work_state(self):
-		"""将 ENERGY 和 FILAMENT 渐变到 WORK 状态。"""
+		"""将 ENERGY 和 FILAMENT ramp到 WORK 状态。"""
 		print("设置状态为: Work")
 		self.energy_slider.set_voltage(config.ENERGY_WORK)
 		self.filament_slider.set_voltage(config.FILAMENT_WORK)
@@ -381,11 +412,75 @@ class MainWindow(QMainWindow):
 			QMessageBox.warning(self, "未能打开设备",
 								"未能连接到采集卡\n请检查USB线是否插好\n以及驱动和dll库的设置是否正确")
 
-	def closeEvent(self, event):
-		"""在退出时确保硬件连接已关闭。"""
-		print("正在关闭应用程序...")
+	def safe_toggle_computer_control(self, voltage_value: float):
+		"""安全地切换 COMPUTER_CONTROL 的状态。"""
+		current_e = self.ramping_manager._currents.get(self.controller.ENERGY.value, 0.0)
+		current_f = self.ramping_manager._currents.get(self.controller.FILAMENT.value, 0.0)
+
+		is_idle = math.isclose(current_e, config.ENERGY_IDLE) and math.isclose(current_f, config.FILAMENT_IDLE)
+
+		if is_idle:
+			print("系统已处于 Idle 状态，立即切换 Computer Control。")
+			self.controller.set_voltage(self.controller.COMPUTER_CONTROL, voltage_value)
+		else:
+			print("警告: 系统不处于 Idle 状态。将首先ramp到 Idle...")
+			self.set_idle_state()
+
+			time_e = abs(current_e - config.ENERGY_IDLE) / config.ENERGY_RAMP
+			time_f = abs(current_f - config.FILAMENT_IDLE) / config.FILAMENT_RAMP
+			delay_ms = int(max(time_e, time_f) * 1000) + 100
+
+			print(f"预计ramp时间: {delay_ms / 1000:.1f} 秒。将在之后切换 Computer Control。")
+			QTimer.singleShot(delay_ms,
+							  lambda: self.controller.set_voltage(self.controller.COMPUTER_CONTROL, voltage_value))
+
+	def _perform_final_shutdown(self):
+		"""执行最后的关闭步骤。"""
+		print("ramp完成。关闭 Computer Control 并退出。")
+		self.comp_ctrl.switch.blockSignals(True)
+		self.comp_ctrl.switch.setChecked(False)
+		self.comp_ctrl.switch.blockSignals(False)
+
+		self.controller.set_voltage(self.controller.COMPUTER_CONTROL, 0.0)
 		self.controller.close_device()
-		event.accept()
+
+		self._is_shutting_down = True
+		self.close()
+
+	def closeEvent(self, event):
+		"""在退出时确保硬件先回到 Idle 状态并关闭。"""
+		# 恢复 stdout
+		sys.stdout = self._original_stdout
+
+		if self._is_shutting_down:
+			print("正在关闭应用程序...")
+			event.accept()
+			return
+
+		if not self.comp_ctrl.switch.isChecked():
+			print("Computer Control 已关闭。")
+			self.controller.close_device()
+			event.accept()
+			return
+
+		print("关闭请求：Computer Control 处于开启状态。")
+		event.ignore()
+
+		current_e = self.ramping_manager._currents.get(self.controller.ENERGY.value, 0.0)
+		current_f = self.ramping_manager._currents.get(self.controller.FILAMENT.value, 0.0)
+		is_idle = math.isclose(current_e, config.ENERGY_IDLE) and math.isclose(current_f, config.FILAMENT_IDLE)
+
+		delay_ms = 0
+		if not is_idle:
+			print("系统不处于 idle 状态，ramp到idle...")
+			self.set_idle_state()
+			time_e = abs(current_e - config.ENERGY_IDLE) / config.ENERGY_RAMP
+			time_f = abs(current_f - config.FILAMENT_IDLE) / config.FILAMENT_RAMP
+			delay_ms = int(max(time_e, time_f) * 1000) + 100
+		else:
+			print("系统已处于 Idle 状态。")
+
+		QTimer.singleShot(delay_ms, self._perform_final_shutdown)
 
 
 # =============================================================================
