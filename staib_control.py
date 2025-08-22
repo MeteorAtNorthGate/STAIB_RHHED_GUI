@@ -24,6 +24,7 @@ except ImportError:
 		FOCUS_CAL = 3.95
 		X_CAL = -2.14
 		Y_CAL = -0.9
+		BEAM_ROCK = -0.56
 		ENERGY_RAMP = 0.03
 		FILAMENT_RAMP = 0.1
 	config = DummyConfig()
@@ -388,7 +389,7 @@ class MainWindow(QMainWindow):
 		self.focus_slider.set_voltage(config.FOCUS_CAL)
 		self.def_x_slider.set_voltage(config.X_CAL)
 		self.def_y_slider.set_voltage(config.Y_CAL)
-		self.beam_rock_slider.set_voltage(0.0)
+		self.beam_rock_slider.set_voltage(config.BEAM_ROCK)
 
 		self.ramping_manager.set_initial_state(self.controller.ENERGY, config.ENERGY_IDLE, config.ENERGY_RAMP)
 		self.ramping_manager.set_initial_state(self.controller.FILAMENT, config.FILAMENT_IDLE, config.FILAMENT_RAMP)

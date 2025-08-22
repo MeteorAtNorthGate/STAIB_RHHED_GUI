@@ -5,11 +5,12 @@ FILAMENT_IDLE = 4.13 #1.0A
 ENERGY_WORK = 8.62 #30kV
 FILAMENT_WORK = 7.83 #1.5A
 #calibration
-GRID_CAL = 3.23
-FOCUS_CAL = 5.1
-X_CAL = 2.72
-Y_CAL = -2.28
+GRID_CAL = 2.99
+FOCUS_CAL = 5.61
+X_CAL = -0.84
+Y_CAL = -2.42
+BEAM_ROCK = -0.56
 #ramp
 ENERGY_RAMP = 0.08
 FILAMENT_RAMP = 0.08
-# XY_RAMP = 1 # This is no longer used, parameters are updated instantly.
+#XY_RAMP = 1 #不需要了
